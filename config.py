@@ -130,3 +130,27 @@ BATCH_SIZE = 100       # 每批数量
 MAX_WORKERS = 10        # 并发线程数
 BATCH_INTERVAL = 0.3    # 批次间隔(秒)，防限流
 CACHE_MAX_AGE = 4       # 缓存失效时间(小时)
+
+# ==================== Phase 4: 盘前预热配置 ====================
+# 预热时间窗口
+PREHEAT_START_HOUR = 8    # 预热开始时间(小时)，盘前30分钟
+PREHEAT_END_HOUR = 9      # 预热结束时间(小时)
+PREHEAT_DAYS_LOOKBACK = 60  # 预热历史数据天数
+
+# 预热缓存配置
+PREHEAT_CACHE_DIR = "data/cache/preheat"  # 盘前预热缓存目录
+PREHEAT_CACHE_TTL = 16  # 预热缓存有效期(小时)，跨交易日
+
+# 增量更新配置
+INCREMENTAL_UPDATE = True  # 启用增量更新
+INCREMENTAL_DAYS = 5        # 增量更新只拉取最近N天
+
+# 预热数据优先级
+PREHEAT_PRIORITY = [
+    'stock_basic',      # 股票基本信息
+    'market_overview',  # 市场概览
+    'daily_all',       # 全量日线数据
+]
+
+# 预热/缓存清单文件
+CACHE_MANIFEST_FILE = "data/cache/.cache_manifest.json"

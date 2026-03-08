@@ -1,0 +1,19 @@
+{
+  "stock_basic": {
+    "status": "ok",
+    "updated": "2026-03-08T04:44:29.485992",
+    "details": {
+      "count": 5488,
+      "cache_file": "data/cache/preheat/stock_basic.pkl"
+    }
+  },
+  "market_overview": {
+    "status": "ok",
+    "updated": "2026-03-08T04:44:33.334958",
+    "details": {
+      "count": 5477,
+      "trade_date": "20260306",
+      "cache_file": "data/cache/preheat/market_overview.pkl"
+    }
+  }
+}

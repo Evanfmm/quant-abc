@@ -441,6 +441,8 @@ if __name__ == "__main__":
 
 import os
 import pickle
+import json
+import time
 from datetime import datetime, timedelta
 
 CACHE_DIR = "data/cache"
@@ -609,6 +611,7 @@ def get_prices_for_candidates(candidate_codes):
     为候选股票池获取行情数据（Production Mode 专用）
     
     优先使用缓存，缓存失效时增量获取
+    支持 Phase 4 增量更新机制
     """
     # 尝试从缓存获取
     cached = get_cached_prices(candidate_codes)
@@ -620,5 +623,218 @@ def get_prices_for_candidates(candidate_codes):
             print(f"缓存命中: {len(df)}/{len(candidate_codes)}")
             return df
     
-    # 缓存失效，增量获取
+    # 缓存失效，尝试增量获取
+    incremental_df = get_incremental_prices(candidate_codes)
+    if incremental_df is not None and len(incremental_df) > 0:
+        return incremental_df
+    
+    # 兜底：全量获取
     return get_realtime_prices(candidate_codes)
+
+
+# ============ Phase 4: 增量更新机制 ============
+
+PREHEAT_DIR = getattr(config, 'PREHEAT_CACHE_DIR', 'data/cache/preheat')
+
+# 增量更新统计
+_incremental_stats = {
+    'cache_hit': 0,
+    'incremental_update': 0,
+    'full_fetch': 0
+}
+
+
+def get_incremental_stats():
+    """获取增量更新统计"""
+    return _incremental_stats.copy()
+
+
+def reset_incremental_stats():
+    """重置增量更新统计"""
+    global _incremental_stats
+    _incremental_stats = {'cache_hit': 0, 'incremental_update': 0, 'full_fetch': 0}
+
+
+def load_preheat_cache(category):
+    """加载预热缓存"""
+    cache_file = os.path.join(PREHEAT_DIR, f"{category}.pkl")
+    if os.path.exists(cache_file):
+        try:
+            with open(cache_file, 'rb') as f:
+                return pickle.load(f)
+        except:
+            pass
+    return None
+
+
+def get_preheat_prices(candidate_codes):
+    """
+    从预热缓存获取行情数据
+    
+    这是 Phase 4 的核心功能：production 主流程直接复用预热缓存
+    """
+    global _incremental_stats
+    
+    # 尝试加载预热缓存
+    preheat_data = load_preheat_cache('daily_all')
+    
+    if preheat_data is not None and len(preheat_data) > 0:
+        # 筛选候选股票
+        df = preheat_data[preheat_data['ts_code'].isin(candidate_codes)]
+        
+        if len(df) > 0:
+            # 获取最新交易日的数据
+            latest_date = df['trade_date'].max()
+            latest_data = df[df['trade_date'] == latest_date].copy()
+            
+            # 统计
+            total_candidates = len(candidate_codes)
+            hit_count = len(latest_data)
+            hit_rate = hit_count / total_candidates if total_candidates > 0 else 0
+            
+            _incremental_stats['cache_hit'] = hit_count
+            
+            print(f"[Phase4] 预热缓存命中: {hit_count}/{total_candidates} ({hit_rate*100:.1f}%)")
+            print(f"[Phase4] 交易日: {latest_date}, 数据量: {len(df)}")
+            
+            return latest_data
+    
+    return None
+
+
+def get_incremental_prices(candidate_codes):
+    """
+    增量更新获取行情数据（Phase 4）
+    
+    逻辑：
+    1. 先检查预热缓存（盘中也可复用）
+    2. 再检查实时缓存
+    3. 只获取缺失的股票或过期的数据
+    4. 合并后返回
+    
+    Returns:
+        DataFrame: 合并后的行情数据
+    """
+    global _incremental_stats
+    
+    print(f"\n[Phase4] 增量更新模式获取 {len(candidate_codes)} 只股票行情...")
+    
+    # 1. 尝试从预热缓存获取
+    preheat_df = get_preheat_prices(candidate_codes)
+    
+    if preheat_df is not None and len(preheat_df) >= len(candidate_codes) * 0.9:
+        # 预热缓存命中率足够高
+        _incremental_stats['cache_hit'] = len(preheat_df)
+        return preheat_df
+    
+    # 2. 预热缓存不够，获取缺失的股票
+    if preheat_df is not None and len(preheat_df) > 0:
+        cached_codes = set(preheat_df['ts_code'].unique())
+        missing_codes = [c for c in candidate_codes if c not in cached_codes]
+    else:
+        missing_codes = list(candidate_codes)
+    
+    if missing_codes:
+        print(f"[Phase4] 需要增量获取: {len(missing_codes)} 只")
+        
+        # 只获取最近5天的数据（增量）
+        incremental_days = getattr(config, 'INCREMENTAL_DAYS', 5)
+        start_date = (datetime.now() - timedelta(days=incremental_days+3)).strftime('%Y%m%d')
+        end_date = get_latest_trade_date()
+        
+        incremental_data = []
+        
+        # 使用并发获取
+        import time
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        
+        batch_size = getattr(config, 'BATCH_SIZE', 100)
+        interval = getattr(config, 'BATCH_INTERVAL', 0.3)
+        
+        for i in range(0, len(missing_codes), batch_size):
+            batch = missing_codes[i:i+batch_size]
+            
+            with ThreadPoolExecutor(max_workers=10) as executor:
+                futures = {executor.submit(get_daily_price, c, start_date, end_date): c for c in batch}
+                for f in as_completed(futures):
+                    df = f.result()
+                    if df is not None and len(df) > 0:
+                        incremental_data.append(df)
+            
+            # 间隔防限流
+            if i + batch_size < len(missing_codes):
+                time.sleep(interval)
+        
+        if incremental_data:
+            incremental_df = pd.concat(incremental_data, ignore_index=True)
+            _incremental_stats['incremental_update'] = len(incremental_df)
+            
+            # 合并预热缓存和增量数据
+            if preheat_df is not None and len(preheat_df) > 0:
+                # 去重，优先用增量数据
+                combined = pd.concat([preheat_df, incremental_df], ignore_index=True)
+                combined = combined.drop_duplicates(subset=['ts_code', 'trade_date'], keep='last')
+            else:
+                combined = incremental_df
+            
+            # 保存到实时缓存
+            if len(combined) > 0:
+                save_prices_cache(combined)
+            
+            return combined
+    
+    # 3. 没有缓存，返回空
+    return pd.DataFrame()
+
+
+def preheat_check():
+    """
+    检查预热缓存状态
+    
+    Returns:
+        dict: 缓存状态信息
+    """
+    import os
+    
+    manifest_file = os.path.join(PREHEAT_DIR, '.manifest.json')
+    manifest = {}
+    if os.path.exists(manifest_file):
+        try:
+            with open(manifest_file, 'r') as f:
+                manifest = json.load(f)
+        except:
+            pass
+    
+    # 检查缓存文件
+    cache_status = {}
+    for category in ['stock_basic', 'market_overview', 'daily_all']:
+        cache_file = os.path.join(PREHEAT_DIR, f"{category}.pkl")
+        if os.path.exists(cache_file):
+            mtime = os.path.getmtime(cache_file)
+            age_hours = (time.time() - mtime) / 3600
+            cache_status[category] = {
+                'exists': True,
+                'age_hours': round(age_hours, 1),
+                'valid': age_hours < getattr(config, 'PREHEAT_CACHE_TTL', 16)
+            }
+            if manifest.get(category):
+                cache_status[category]['status'] = manifest[category].get('status', 'unknown')
+        else:
+            cache_status[category] = {'exists': False}
+    
+    return cache_status
+
+
+# ============ 导出增量更新函数 ============
+
+__all__ = [
+    'get_cached_prices',
+    'save_prices_cache',
+    'get_realtime_prices',
+    'get_prices_for_candidates',
+    'get_incremental_prices',
+    'get_preheat_prices',
+    'get_incremental_stats',
+    'reset_incremental_stats',
+    'preheat_check',
+]
