@@ -123,3 +123,10 @@ TEST_SAMPLE_SIZE = 50
 # dev_mode 配置
 DEV_SH_SAMPLE = 25
 DEV_SZ_SAMPLE = 25
+
+# ==================== Production 并发配置 ====================
+# 行情获取并发参数
+BATCH_SIZE = 100       # 每批数量
+MAX_WORKERS = 10        # 并发线程数
+BATCH_INTERVAL = 0.3    # 批次间隔(秒)，防限流
+CACHE_MAX_AGE = 4       # 缓存失效时间(小时)

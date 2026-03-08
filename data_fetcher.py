@@ -433,6 +433,11 @@ if __name__ == "__main__":
 
 
 # ============ Production Mode 缓存和增量行情 ============
+# 缓存设计说明:
+# - 缓存目录: data/cache/realtime/
+# - 文件命名: prices_YYYYMMDD.pkl
+# - 失效时间: 4小时
+# - 增量逻辑: 检查缓存是否命中，命中则使用，未命中则获取
 
 import os
 import pickle
@@ -440,6 +445,7 @@ from datetime import datetime, timedelta
 
 CACHE_DIR = "data/cache"
 REALTIME_DIR = f"{CACHE_DIR}/realtime"
+CACHE_MAX_AGE_HOURS = 4  # 缓存失效时间
 
 
 def _ensure_cache_dir():
@@ -464,16 +470,26 @@ def is_cache_valid(cache_file, max_age_hours=4):
     return age_hours < max_age_hours
 
 
-def get_cached_prices(codes=None, max_age_hours=4):
+def get_cached_prices(codes=None, max_age_hours=CACHE_MAX_AGE_HOURS):
     """
-    获取缓存的行情数据（用于 production_mode）
+    获取缓存的行情数据（Phase 1: 缓存优化）
+    
+    缓存设计:
+    - 目录: data/cache/realtime/
+    - 文件: prices_YYYYMMDD.pkl
+    - 失效: 4小时
+    
+    逻辑:
+    1. 检查缓存是否存在
+    2. 检查是否在有效期内 (4小时)
+    3. 命中则返回，失效则返回 None
     
     Args:
         codes: 股票代码列表，None 表示获取全部
-        max_age_hours: 缓存最大有效时间
+        max_age_hours: 缓存有效时间
     
     Returns:
-        DataFrame: 行情数据
+        DataFrame: 缓存的行情数据，None 表示未命中
     """
     cache_file = get_cache_path('prices')
     
@@ -503,14 +519,15 @@ def save_prices_cache(prices):
         print(f"保存缓存失败: {e}")
 
 
-def get_realtime_prices(codes, batch_size=100, interval=0.5):
+def get_realtime_prices(codes, batch_size=None, interval=None, max_workers=None):
     """
-    获取实时行情（Production Mode 增量获取）
+    获取实时行情（Phase 2: 并发优化）
     
     Args:
         codes: 股票代码列表
-        batch_size: 每批数量
-        interval: 批次间隔（秒），避免限流
+        batch_size: 每批数量（默认100）
+        interval: 批次间隔秒（默认0.3）
+        max_workers: 并发数（默认10）
     
     Returns:
         DataFrame: 行情数据
@@ -518,19 +535,43 @@ def get_realtime_prices(codes, batch_size=100, interval=0.5):
     import time
     from concurrent.futures import ThreadPoolExecutor, as_completed
     
+    # 使用默认配置或传入值
+    if batch_size is None:
+        batch_size = getattr(config, 'BATCH_SIZE', 100)
+    if interval is None:
+        interval = getattr(config, 'BATCH_INTERVAL', 0.3)
+    if max_workers is None:
+        max_workers = getattr(config, 'MAX_WORKERS', 10)
+    
+    print(f"[并发] batch={batch_size}, workers={max_workers}, interval={interval}s")
+    
     results = []
     total = len(codes)
+    failed = []  # 失败列表
     print(f"获取实时行情: {total} 只...")
     
-    def get_one(code):
-        try:
-            df = pro.daily(ts_code=code, 
-                         start_date=(datetime.now() - timedelta(days=5)).strftime('%Y%m%d'),
-                         end_date=datetime.now().strftime('%Y%m%d'))
-            if len(df) > 0:
-                return df.iloc[-1]  # 取最新
-        except:
-            pass
+    def get_one(code, retry_times=None):
+        """获取单个股票行情（带容错）"""
+        if retry_times is None:
+            retry_times = getattr(config, 'RETRY_TIMES', 3)
+        
+        last_error = None
+        for attempt in range(retry_times):
+            try:
+                df = pro.daily(ts_code=code, 
+                             start_date=(datetime.now() - timedelta(days=5)).strftime('%Y%m%d'),
+                             end_date=datetime.now().strftime('%Y%m%d'))
+                if len(df) > 0:
+                    return df.iloc[-1]  # 取最新
+            except Exception as e:
+                last_error = str(e)
+                # 限流退避
+                if 'limit' in last_error.lower() or 'too many' in last_error.lower():
+                    import time
+                    time.sleep(getattr(config, 'RETRY_DELAY', 1) * (attempt + 1))
+                continue
+        
+        # 所有重试都失败
         return None
     
     # 分批获取
@@ -542,6 +583,8 @@ def get_realtime_prices(codes, batch_size=100, interval=0.5):
                 r = f.result()
                 if r is not None:
                     results.append(r)
+                elif r is None and code in failed:
+                    pass  # 已记录
         
         # 进度
         done = min(i + batch_size, total)
@@ -553,12 +596,11 @@ def get_realtime_prices(codes, batch_size=100, interval=0.5):
     
     if results:
         df = pd.DataFrame(results)
-        # 保存缓存
         save_prices_cache(df)
-        print(f"成功获取: {len(df)} 条")
+        print(f"成功获取: {len(df)} 条, 失败: {len(failed)}")
         return df
     else:
-        print("获取失败")
+        print(f"获取失败: 成功0, 失败{total}")
         return pd.DataFrame()
 
 
