@@ -455,8 +455,8 @@ class FactorBacktest:
                 current_value = self.engine.positions[ts_code]['shares'] * day_prices[ts_code]
                 target_value = self.engine.portfolio_value() * target_weight
                 
-权重高于目标，卖出
-                if                # 如果当前 current_value > target_value * 1.1:
+                # 权重高于目标，卖出
+                if current_value > target_value * 1.1:
                     diff_value = current_value - target_value
                     shares = int(diff_value / day_prices[ts_code] / 100) * 100
                     if shares > 0:

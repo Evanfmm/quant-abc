@@ -2,7 +2,9 @@
 # 根据策略专家建议修改
 
 # ==================== Tushare API配置 ====================
-TUSHARE_TOKEN = "8c128e90d19f7457e435c258a1d4e12740a97f35a766e0f4b6f8e72c"
+# 从环境变量读取 token，安全方式
+import os
+TUSHARE_TOKEN = os.environ.get("TUSHARE_TOKEN", "")
 
 # ==================== 账户配置 ====================
 INITIAL_CAPITAL = 50000  # 初始资金5万
