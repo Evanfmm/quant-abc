@@ -1,6 +1,23 @@
 """
 A股多因子量化交易系统 - 数据获取模块（增强版）
 支持缓存、热数据、批量获取
+
+============================================
+动态过滤（基于行情数据的实时字段）
+============================================
+
+【可用字段】
+- close: 收盘价 (可用于判断停牌: close=0)
+- pct_chg: 涨跌幅
+- vol: 成交量 (手)
+- amount: 成交额 (千元)
+- turnover_rate: 换手率
+- volume_ratio: 量比
+
+【动态过滤规则】
+1. 排除停牌（close=0 或 close为NaN）
+2. 排除低成交（amount<100万，即amount<1000千元）
+3. 排除关键数据缺失（close/pct_chg/vol/amount任一为空）
 """
 import tushare as ts
 import pandas as pd
@@ -16,6 +33,61 @@ pro = ts.pro_api()
 
 # 全局缓存
 _cache = get_cache()
+
+# 动态过滤常量
+MIN_DAILY_AMOUNT = 1_000_000  # 最小日成交额100万元
+
+
+def apply_dynamic_filter(prices, min_amount=MIN_DAILY_AMOUNT):
+    """
+    动态过滤 - 基于行情数据过滤
+    
+    在获取行情数据后执行，排除：
+    1. 停牌（close=0 或 close为NaN）
+    2. 低成交（amount<100万）
+    3. 关键数据缺失（close/pct_chg/vol/amount任一为空）
+    
+    Args:
+        prices: 行情数据DataFrame
+        min_amount: 最小日成交额（元），默认100万
+    
+    Returns:
+        tuple: (过滤后的DataFrame, filter_stats统计字典)
+    """
+    if prices is None or len(prices) == 0:
+        return pd.DataFrame(), {'原始数据': 0}
+    
+    df = prices.copy()
+    original_count = len(df)
+    filter_stats = {}
+    
+    # 1. 排除停牌（close=0 或 close为NaN）
+    suspended_mask = (df['close'] == 0) | (df['close'].isna())
+    filter_stats['排除停牌'] = int(suspended_mask.sum())
+    df = df[~suspended_mask]
+    
+    # 2. 排除低成交（amount<min_amount）
+    # amount单位是千元，所以100万=1000千元
+    min_amount_thousand = min_amount / 1000
+    low_amount_mask = (df['amount'] < min_amount_thousand) | (df['amount'].isna())
+    filter_stats['排除低成交'] = int(low_amount_mask.sum())
+    df = df[~low_amount_mask]
+    
+    # 3. 排除关键数据缺失
+    key_fields = ['close', 'pct_chg', 'vol', 'amount']
+    missing_mask = False
+    for field in key_fields:
+        if field in df.columns:
+            missing_mask = missing_mask | df[field].isna()
+    
+    filter_stats['排除数据缺失'] = int(missing_mask.sum())
+    df = df[~missing_mask]
+    
+    filtered_count = len(df)
+    df.attrs['dynamic_filter_stats'] = filter_stats
+    df.attrs['original_count'] = original_count
+    
+    return df, filter_stats
 
 
 def get_trade_dates(start_date=None, end_date=None, n=5):
@@ -358,3 +430,153 @@ if __name__ == "__main__":
     
     print("\n缓存统计:")
     print(get_cache_stats())
+
+
+# ============ Production Mode 缓存和增量行情 ============
+
+import os
+import pickle
+from datetime import datetime, timedelta
+
+CACHE_DIR = "data/cache"
+REALTIME_DIR = f"{CACHE_DIR}/realtime"
+
+
+def _ensure_cache_dir():
+    """确保缓存目录存在"""
+    os.makedirs(REALTIME_DIR, exist_ok=True)
+
+
+def get_cache_path(category, date_str=None):
+    """获取缓存文件路径"""
+    _ensure_cache_dir()
+    if date_str is None:
+        date_str = datetime.now().strftime('%Y%m%d')
+    return f"{REALTIME_DIR}/{category}_{date_str}.pkl"
+
+
+def is_cache_valid(cache_file, max_age_hours=4):
+    """检查缓存是否有效"""
+    if not os.path.exists(cache_file):
+        return False
+    mtime = os.path.getmtime(cache_file)
+    age_hours = (datetime.now().timestamp() - mtime) / 3600
+    return age_hours < max_age_hours
+
+
+def get_cached_prices(codes=None, max_age_hours=4):
+    """
+    获取缓存的行情数据（用于 production_mode）
+    
+    Args:
+        codes: 股票代码列表，None 表示获取全部
+        max_age_hours: 缓存最大有效时间
+    
+    Returns:
+        DataFrame: 行情数据
+    """
+    cache_file = get_cache_path('prices')
+    
+    # 检查缓存是否有效
+    if is_cache_valid(cache_file, max_age_hours):
+        try:
+            with open(cache_file, 'rb') as f:
+                prices = pickle.load(f)
+            print(f"使用缓存行情: {len(prices)} 条")
+            if codes:
+                prices = prices[prices['ts_code'].isin(codes)]
+            return prices
+        except:
+            pass
+    
+    return None
+
+
+def save_prices_cache(prices):
+    """保存行情到缓存"""
+    cache_file = get_cache_path('prices')
+    try:
+        with open(cache_file, 'wb') as f:
+            pickle.dump(prices, f)
+        print(f"已保存行情缓存: {len(prices)} 条")
+    except Exception as e:
+        print(f"保存缓存失败: {e}")
+
+
+def get_realtime_prices(codes, batch_size=100, interval=0.5):
+    """
+    获取实时行情（Production Mode 增量获取）
+    
+    Args:
+        codes: 股票代码列表
+        batch_size: 每批数量
+        interval: 批次间隔（秒），避免限流
+    
+    Returns:
+        DataFrame: 行情数据
+    """
+    import time
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    
+    results = []
+    total = len(codes)
+    print(f"获取实时行情: {total} 只...")
+    
+    def get_one(code):
+        try:
+            df = pro.daily(ts_code=code, 
+                         start_date=(datetime.now() - timedelta(days=5)).strftime('%Y%m%d'),
+                         end_date=datetime.now().strftime('%Y%m%d'))
+            if len(df) > 0:
+                return df.iloc[-1]  # 取最新
+        except:
+            pass
+        return None
+    
+    # 分批获取
+    for i in range(0, total, batch_size):
+        batch = codes[i:i+batch_size]
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = {executor.submit(get_one, c): c for c in batch}
+            for f in as_completed(futures):
+                r = f.result()
+                if r is not None:
+                    results.append(r)
+        
+        # 进度
+        done = min(i + batch_size, total)
+        print(f"  进度: {done}/{total}")
+        
+        # 间隔避免限流
+        if i + batch_size < total:
+            time.sleep(interval)
+    
+    if results:
+        df = pd.DataFrame(results)
+        # 保存缓存
+        save_prices_cache(df)
+        print(f"成功获取: {len(df)} 条")
+        return df
+    else:
+        print("获取失败")
+        return pd.DataFrame()
+
+
+def get_prices_for_candidates(candidate_codes):
+    """
+    为候选股票池获取行情数据（Production Mode 专用）
+    
+    优先使用缓存，缓存失效时增量获取
+    """
+    # 尝试从缓存获取
+    cached = get_cached_prices(candidate_codes)
+    
+    if cached is not None and len(cached) > 0:
+        # 筛选候选股票
+        df = cached[cached['ts_code'].isin(candidate_codes)]
+        if len(df) > len(candidate_codes) * 0.8:  # 缓存命中率 > 80%
+            print(f"缓存命中: {len(df)}/{len(candidate_codes)}")
+            return df
+    
+    # 缓存失效，增量获取
+    return get_realtime_prices(candidate_codes)
