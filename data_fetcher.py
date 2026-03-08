@@ -152,8 +152,9 @@ def get_daily_price(ts_code, start_date=None, end_date=None):
         end_date = end_date.replace('-', '')
     
     df = pro.daily(ts_code=ts_code, start_date=start_date, end_date=end_date)
-    df = df.sort_values('trade_date')
-    return df
+    if df is not None and len(df) > 0 and 'trade_date' in df.columns:
+        df = df.sort_values('trade_date')
+    return df if df is not None else pd.DataFrame()
 
 
 def get_recent_daily_data(n_days=60, batch_size=50):
