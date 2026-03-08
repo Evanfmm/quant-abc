@@ -109,3 +109,17 @@ DATA_DIR = "data"
 LOG_DIR = "logs"
 OUTPUT_DIR = "output"
 BACKTEST_DIR = "backtest"
+
+# ==================== 运行模式配置 ====================
+# 可选值: test / dev / production
+# - test: 冒烟测试，随机小样本 (50只)
+# - dev: 开发验证，SH/SZ分层采样 (各25只)
+# - production: 正式推荐，全量候选池 (默认)
+RUN_MODE = "production"
+
+# test_mode 配置
+TEST_SAMPLE_SIZE = 50
+
+# dev_mode 配置
+DEV_SH_SAMPLE = 25
+DEV_SZ_SAMPLE = 25
