@@ -16,6 +16,8 @@ quant-abc 是一个基于多因子模型的A股量化交易系统，采用Python
 
 ### 1. 因子模型
 
+> **当前唯一正式版本**: `factor_model_v3.py` (短线增强版)
+
 | 因子类别 | 权重 | 因子列表 |
 |---------|------|----------|
 | 价值因子 | 20% | PE、PB、PS（市销率） |
@@ -30,6 +32,8 @@ quant-abc 是一个基于多因子模型的A股量化交易系统，采用Python
 - 动量/趋势 25%（5日涨幅、突破强度）
 - 情绪/量能 25%（换手率、量比、振幅）
 - 风险 15%（波动率、市值）
+
+> 历史版本已移至 `archive/` 目录
 
 ### 2. 风控模块
 
@@ -84,22 +88,20 @@ quant-abc 是一个基于多因子模型的A股量化交易系统，采用Python
 ```
 quant-abc/
 ├── config.py                  # 配置文件
-├── data_fetcher.py            # 数据获取（缓存优化）
-├── factor_model.py            # 原始因子模型
-├── factor_model_enhanced.py   # 增强因子模型
-├── factor_model_v2.py         # 因子模型v2
-├── factor_model_v3.py         # 因子模型v3（短线增强）
-├── factor_model_shortterm.py  # 短线因子模型
-├── risk_manager.py            # 风控模块
-├── broker_api.py              # 券商API
-├── cache_manager.py           # 缓存管理
-├── trading_signal.py          # 交易信号（含风控）
-├── technical_indicators.py    # 技术指标
-├── ml_predictor.py            # 机器学习预测模块
-├── daily_report.py            # 每日报告
-├── main.py                    # 主程序
-├── main_enhanced.py           # 增强版主程序
-└── requirements.txt           # 项目依赖
+├── data_fetcher.py           # 数据获取（含缓存优化）
+├── stock_selector.py         # 股票池选择器
+├── factor_model_v3.py        # 因子模型（当前唯一正式版本）
+├── risk_manager.py           # 风控模块
+├── broker_api.py             # 券商API
+├── cache_manager.py          # 缓存管理
+├── trading_signal.py        # 交易信号（含风控）
+├── technical_indicators.py   # 技术指标
+├── ml_predictor.py          # 机器学习预测模块
+├── daily_report.py          # 每日报告
+├── main_production.py       # Production 正式入口
+├── preheat.py              # 盘前预热脚本
+├── archive/                 # 历史版本（已归档）
+└── requirements.txt         # 项目依赖
 ```
 
 ## 快速开始
@@ -107,45 +109,57 @@ quant-abc/
 ### 环境要求
 
 ```bash
-pip install pandas numpy tushare
+pip install pandas numpy tushare lightgbm scikit-learn
 ```
 
 ### 配置
 
-在 `config.py` 中设置：
+1. 创建 `.env` 文件（推荐）或设置环境变量：
+
+```bash
+# 方式1: 创建 .env 文件
+echo "TUSHARE_TOKEN=你的token" > .env
+
+# 方式2: 设置环境变量
+export TUSHARE_TOKEN=你的token
+```
+
+2. 在 `config.py` 中可调整以下参数：
 
 ```python
-TUSHARE_TOKEN = "你的token"
 INITIAL_CAPITAL = 50000  # 初始资金
 MAX_POSITION = 4         # 最多持仓数
+RUN_MODE = "production"  # 运行模式: test/dev/production
 ```
 
 ### 运行
 
-**基础版（原有功能）**
+**Production 模式（推荐 - 正式盘前推荐）**
 ```bash
-python main.py --report
+python main_production.py
 ```
 
-**增强版（推荐）**
+**盘前预热（可选，推荐每日开盘前执行）**
 ```bash
-python main_enhanced.py --enhanced
+python preheat.py              # 完整预热
+python preheat.py --check      # 检查缓存状态
+python preheat.py --stats      # 显示缓存统计
 ```
 
-**回测模式**
+**开发/测试模式**
 ```bash
-python main_enhanced.py --backtest
+# 修改 config.py 中的 RUN_MODE
+RUN_MODE = "test"   # 冒烟测试 (50只)
+RUN_MODE = "dev"    # 开发验证 (SH/SZ各25只)
 ```
 
-**券商模拟**
-```bash
-python main_enhanced.py --broker
-```
+### 历史版本
 
-**清空缓存**
-```bash
-python main_enhanced.py --clear-cache
-```
+旧版入口已移至 `archive/` 目录：
+- `archive/main.py`
+- `archive/main_enhanced.py`
+
+当前唯一正式入口: `main_production.py`
 
 ## 机器学习模块使用
 
