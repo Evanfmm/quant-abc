@@ -2,8 +2,19 @@
 # 根据策略专家建议修改
 
 # ==================== Tushare API配置 ====================
-# 从环境变量读取 token，安全方式
+# 从环境变量或 .env 文件读取 token，安全方式
 import os
+
+# 尝试从 .env 文件加载（如果存在）
+env_file = os.path.join(os.path.dirname(__file__), '.env')
+if os.path.exists(env_file):
+    with open(env_file) as f:
+        for line in f:
+            line = line.strip()
+            if line.startswith('TUSHARE_TOKEN='):
+                _, token = line.split('=', 1)
+                os.environ['TUSHARE_TOKEN'] = token.strip('"\'')
+
 TUSHARE_TOKEN = os.environ.get("TUSHARE_TOKEN", "")
 
 # ==================== 账户配置 ====================
@@ -79,6 +90,9 @@ FILTERS = {
     "roe_min": 0,               # ROE大于0（盈利公司）
     "exclude_loss": True,       # 排除亏损公司
 }
+
+# 增强版过滤条件（引用上方定义）
+ENHANCED_FILTERS = FILTERS
 
 # ==================== 行业配置 ====================
 INDUSTRY_NEUTRAL = True  

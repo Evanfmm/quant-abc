@@ -73,6 +73,12 @@ def get_daily_price(ts_code, start_date=None, end_date=None):
     if start_date is None:
         start_date = (datetime.now() - timedelta(days=60)).strftime('%Y%m%d')
     
+    # 转换日期格式 YYYY-MM-DD -> YYYYMMDD
+    if start_date and '-' in str(start_date):
+        start_date = start_date.replace('-', '')
+    if end_date and '-' in str(end_date):
+        end_date = end_date.replace('-', '')
+    
     df = pro.daily(ts_code=ts_code, start_date=start_date, end_date=end_date)
     df = df.sort_values('trade_date')
     return df
