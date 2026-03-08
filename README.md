@@ -58,7 +58,19 @@ quant-abc 是一个基于多因子模型的A股量化交易系统，采用Python
 - **自动清理**：过期数据自动清理
 - **统计监控**：缓存命中率统计
 
-### 5. 券商API对接
+### 5. 机器学习预测模块
+
+- **模型支持**：LightGBM（默认）、RandomForest备选
+- **预测目标**：预测股票未来N日收益率
+- **特征工程**：
+  - 技术特征（收盘价、成交量等的滞后、移动平均、波动率）
+  - 动量特征（5日/10日动量）
+  - 量价特征（量价比）
+  - 基本面特征（PE、PB、ROE等）
+- **融合方式**：支持加权融合和排名融合与因子分数结合
+- **评估指标**：IC（信息系数）、RMSE、回测收益
+
+### 6. 券商API对接
 
 | Broker类型 | 说明 | 状态 |
 |-----------|------|------|
@@ -83,9 +95,11 @@ quant-abc/
 ├── cache_manager.py           # 缓存管理
 ├── trading_signal.py          # 交易信号（含风控）
 ├── technical_indicators.py    # 技术指标
+├── ml_predictor.py            # 机器学习预测模块
 ├── daily_report.py            # 每日报告
 ├── main.py                    # 主程序
-└── main_enhanced.py           # 增强版主程序
+├── main_enhanced.py           # 增强版主程序
+└── requirements.txt           # 项目依赖
 ```
 
 ## 快速开始
@@ -133,11 +147,96 @@ python main_enhanced.py --broker
 python main_enhanced.py --clear-cache
 ```
 
+## 机器学习模块使用
+
+### 安装依赖
+
+```bash
+pip install -r requirements.txt
+```
+
+### 依赖说明
+
+| 依赖 | 版本 | 说明 |
+|------|------|------|
+| lightgbm | ≥3.0.0 | 机器学习模型（GBDT） |
+| scikit-learn | ≥1.0.0 | 数据预处理、模型评估 |
+| pandas | ≥1.3.0 | 数据处理 |
+| numpy | ≥1.20.0 | 数值计算 |
+| tushare | ≥1.2.0 | 量化数据接口 |
+
+### 使用示例
+
+**1. 训练模型**
+
+```python
+from ml_predictor import MLPredictor, train_and_evaluate
+
+# 训练 LightGBM 模型（默认）
+predictor = train_and_evaluate(n_days=60, model_type='lightgbm')
+
+# 或使用 RandomForest
+predictor = train_and_evaluate(n_days=60, model_type='randomforest')
+```
+
+**2. 预测股票收益**
+
+```python
+from ml_predictor import MLPredictor
+import data_fetcher
+
+# 获取当前股票数据
+current_data = data_fetcher.get_recent_daily_data(n_days=30)
+
+# 初始化并训练模型
+predictor = MLPredictor(model_type='lightgbm')
+predictor.fit(current_data, target_days=5)
+
+# 预测未来收益
+predictions = predictor.predict(current_data)
+print(predictions.head(10))
+```
+
+**3. 融合因子分数**
+
+```python
+from ml_predictor import MLPredictor, predict_with_fusion
+
+# 假设已有因子分数 DataFrame
+factor_scores = pd.DataFrame({
+    'ts_code': ['000001.SZ', '000002.SZ'],
+    'factor_score': [0.8, 0.6]
+})
+
+# 融合预测
+result = predict_with_fusion(
+    predictor, 
+    current_data, 
+    factor_scores, 
+    fusion_method='weighted'  # 或 'rank'
+)
+print(result.head(10))
+```
+
+**4. 查看特征重要性**
+
+```python
+importance = predictor.get_feature_importance()
+print(importance.head(10))
+```
+
+### 命令行运行
+
+```bash
+# 直接运行 ML 模块测试
+python ml_predictor.py
+```
+
 ## 待办事项
 
 - [ ] 实盘券商对接：完成富途/聚宽API对接
 - [ ] 因子回测：对新因子进行历史回测验证
-- [ ] 机器学习因子：引入ML预测模型
+- [x] 机器学习因子：引入ML预测模型 ✅ 已完成 (ml_predictor.py)
 - [ ] 组合优化：引入Mean-Variance优化
 - [ ] 实时行情：接入实时行情websocket
 
