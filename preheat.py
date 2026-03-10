@@ -162,7 +162,7 @@ def preheat_market_overview():
 
 
 def preheat_daily_all(force=False):
-    """预热全量日线数据（核心功能）"""
+    """预热全量日线数据（核心功能）- 使用并发优化"""
     log("预热全量日线数据...")
     start = time.time()
     
@@ -191,31 +191,43 @@ def preheat_daily_all(force=False):
         codes = candidates['ts_code'].tolist()
         log(f"  候选股票: {len(codes)} 只")
         
-        # 获取全量日线数据（使用现有的 get_prices_for_candidates 逻辑）
+        # 使用并发获取
         all_data = []
         batch_size = getattr(config, 'BATCH_SIZE', 100)
         interval = getattr(config, 'BATCH_INTERVAL', 0.3)
+        max_workers = getattr(config, 'MAX_WORKERS', 10)
         
         total = len(codes)
-        log(f"  开始获取 {total} 只股票日线数据...")
+        log(f"  开始并发获取 {total} 只股票日线数据...")
+        log(f"  [并发] batch={batch_size}, workers={max_workers}, interval={interval}s")
         
-        # 分批获取
+        # 并发获取
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        
+        def get_one(code):
+            try:
+                df = get_daily_price(code, 
+                    start_date=(datetime.now() - timedelta(days=n_days+10)).strftime('%Y%m%d'),
+                    end_date=get_latest_trade_date())
+                if df is not None and len(df) > 0:
+                    # 添加股票名称和行业
+                    stock_info = candidates[candidates['ts_code'] == code]
+                    if len(stock_info) > 0:
+                        df['name'] = stock_info.iloc[0]['name']
+                        df['industry'] = stock_info.iloc[0]['industry']
+                return df
+            except:
+                return None
+        
         for i in range(0, total, batch_size):
             batch = codes[i:i+batch_size]
-            for code in batch:
-                try:
-                    df = get_daily_price(code, 
-                        start_date=(datetime.now() - timedelta(days=n_days+10)).strftime('%Y%m%d'),
-                        end_date=get_latest_trade_date())
+            
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {executor.submit(get_one, c): c for c in batch}
+                for f in as_completed(futures):
+                    df = f.result()
                     if df is not None and len(df) > 0:
-                        # 添加股票名称和行业
-                        stock_info = candidates[candidates['ts_code'] == code]
-                        if len(stock_info) > 0:
-                            df['name'] = stock_info.iloc[0]['name']
-                            df['industry'] = stock_info.iloc[0]['industry']
                         all_data.append(df)
-                except Exception as e:
-                    continue
             
             # 进度
             done = min(i + batch_size, total)
